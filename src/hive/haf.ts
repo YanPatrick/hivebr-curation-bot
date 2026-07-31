@@ -1,12 +1,4 @@
-import axios from "axios";
-
-type IncomingDelegation = {
-    delegator: string;
-    delegatee: string;
-    vests: string; // e.g., "178701.319083"
-    hp_equivalent: string; // e.g., "106.457"
-    timestamp: string; // ISO string
-};
+import { Pool } from "pg";
 
 type RankedDelegator = {
   delegator: string;
@@ -17,11 +9,27 @@ const REQUEST_TIMEOUT_MS = 5000;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1000;
 
+// hafsql-api.mahdiyari.info (the old REST API) was shut down/archived, so we
+// query the public HafSQL Postgres database directly instead. These are the
+// maintainer's published anonymous read-only credentials, not a secret:
+// https://mahdiyari.gitlab.io/hafsql/
+const pool = new Pool({
+  host: "hafsql-sql.mahdiyari.info",
+  port: 5432,
+  database: "haf_block_log",
+  user: "hafsql_public",
+  password: "hafsql_public",
+  query_timeout: REQUEST_TIMEOUT_MS,
+  connectionTimeoutMillis: REQUEST_TIMEOUT_MS,
+  max: 3,
+  idleTimeoutMillis: 30000,
+});
+
 // Falls back to the last successful fetch when the API is flaky, so a
 // transient outage doesn't get displayed as "Not Ranked" for real delegators.
 let cachedRankedDelegators: RankedDelegator[] | null = null;
 
-// Circuit breaker: after 5 consecutive failures, stop hammering the HAF API
+// Circuit breaker: after 5 consecutive failures, stop hammering the database
 // for 60s instead of retrying on every single rank lookup.
 const CIRCUIT_FAILURE_THRESHOLD = 5;
 const CIRCUIT_COOLDOWN_MS = 60000;
@@ -43,18 +51,20 @@ function sleep(ms: number) {
 
 async function fetchRankedDelegators(): Promise<RankedDelegator[]> {
   const communityAccount = 'hive-br.voter';
-  const url = `https://hafsql-api.mahdiyari.info/delegations/${communityAccount}/incoming`;
 
   if (circuitOpen()) {
     if (cachedRankedDelegators) return cachedRankedDelegators;
-    throw new Error('HAF API unavailable — circuit open');
+    throw new Error('HafSQL database unavailable — circuit open');
   }
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const response = await axios.get<IncomingDelegation[]>(url, { timeout: REQUEST_TIMEOUT_MS });
-      const rankedDelegators = response.data
+      const result = await pool.query<{ delegator: string; vests: string }>(
+        `SELECT delegator, vests FROM hafsql.delegations WHERE delegatee = $1`,
+        [communityAccount]
+      );
+      const rankedDelegators = result.rows
         .map((d) => ({
           delegator: d.delegator,
           amount: parseFloat(d.vests),
@@ -76,7 +86,7 @@ async function fetchRankedDelegators(): Promise<RankedDelegator[]> {
     }
   }
 
-  console.error(`Error fetching delegations from HAF API after ${MAX_ATTEMPTS} attempts:`, lastError);
+  console.error(`Error fetching delegations from HafSQL database after ${MAX_ATTEMPTS} attempts:`, lastError);
   if (cachedRankedDelegators) {
     console.error('Falling back to last known delegation snapshot.');
     return cachedRankedDelegators;
