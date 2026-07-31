@@ -160,6 +160,95 @@ async function getUserInfo(author: string): Promise<{
   }
 }
 
+// Shared by processPost (real curation) and !userinfo (estimate): everything
+// here can be known about a user regardless of any specific post. Post-only
+// criteria (posted in HiveBR community, hive-br beneficiary) are added on top
+// by the caller when a post is actually available.
+function calculateBaseVoteScore(params: {
+  ke: number;
+  percentageDelegated: number; // hive-br.voter discounted
+  isPD: number;
+  authorRank: number | null;
+  hbrStake: number | undefined;
+  isVerified: boolean;
+  isOnTrail: boolean;
+  isInStaffList: boolean;
+}): {
+  voteValue: number;
+  kePoints: number;
+  delegationPoints: number;
+  pdPoints: number;
+  rankPoints: number;
+  hbrPoints: number;
+  verifiedPoints: number;
+  trailPoints: number;
+  staffPoints: number;
+} {
+  let voteValue = 0;
+
+  let kePoints = 0;
+  if (params.ke < 2) {
+    kePoints = 10;
+  } else if (params.ke >= 2 && params.ke < 3) {
+    kePoints = 5;
+  }
+  voteValue += kePoints;
+
+  let delegationPoints = 0;
+  if (params.percentageDelegated < 30) {
+    delegationPoints = 10;
+  } else if (params.percentageDelegated >= 30 && params.percentageDelegated < 50) {
+    delegationPoints = 5;
+  }
+  voteValue += delegationPoints;
+
+  let pdPoints = 0;
+  if (!params.isPD) {
+    pdPoints = 20;
+    voteValue += pdPoints;
+  }
+
+  let rankPoints = 0;
+  if (params.authorRank !== null) {
+    if (params.authorRank >= 1 && params.authorRank <= 10) {
+      rankPoints = 20;
+    } else if (params.authorRank >= 11 && params.authorRank <= 20) {
+      rankPoints = 15;
+    } else if (params.authorRank >= 21 && params.authorRank <= 30) {
+      rankPoints = 10;
+    } else if (params.authorRank >= 31 && params.authorRank <= 40) {
+      rankPoints = 5;
+    }
+    voteValue += rankPoints;
+  }
+
+  let hbrPoints = 0;
+  if (params.hbrStake) {
+    hbrPoints = Math.min(Math.floor(params.hbrStake / 10), 20); // 1 point per 10 HBR, max 20 points
+    voteValue += hbrPoints;
+  }
+
+  let verifiedPoints = 0;
+  if (params.isVerified) {
+    verifiedPoints = 15;
+    voteValue += verifiedPoints;
+  }
+
+  let trailPoints = 0;
+  if (params.isOnTrail) {
+    trailPoints = 5;
+    voteValue += trailPoints;
+  }
+
+  let staffPoints = 0;
+  if (params.isInStaffList) {
+    staffPoints = 10;
+    voteValue += staffPoints;
+  }
+
+  return { voteValue, kePoints, delegationPoints, pdPoints, rankPoints, hbrPoints, verifiedPoints, trailPoints, staffPoints };
+}
+
 async function getPostInfo(author: string, permlink: string): Promise<{
   category: string;
   title: string;
@@ -339,69 +428,46 @@ const processPost = async (post: any, timestamp: string) => {
   const postLink = `https://peakd.com/@${author}/${permlink}`;
   
   if (userInfo) {
-    // Initialize voteValue
-    let voteValue = 0;
-
-    // Calculate voteValue based on KE
-    let kePoints = 0;
-    if (userInfo.ke < 2) {
-      kePoints = 10;
-    } else if (userInfo.ke >= 2 && userInfo.ke < 3) {
-      kePoints = 5;
-    }
-    voteValue += kePoints;
-
-    // Calculate Percentage Delegated
+    // Calculate Percentage Delegated (hive-br.voter discounted)
     const adjustedDelegatedHp = userInfo.delegatedHp - (userInfo.hiveBrVoterDelegation || 0);
     const percentageDelegated = (adjustedDelegatedHp / userInfo.hp) * 100;
 
-    // Calculate voteValue based on Percentage Delegated
-    let delegationPoints = 0;
-    if (percentageDelegated < 30) {
-      delegationPoints = 10;
-    } else if (percentageDelegated >= 30 && percentageDelegated < 50) {
-      delegationPoints = 5;
-    }
-    voteValue += delegationPoints;
-
-    // Add points if user is not powering down
-    let pdPoints = 0;
-    if (!userInfo.isPD) {
-      pdPoints = 20;
-      voteValue += pdPoints;
-    }
-
     // Get author ranking among delegators
     const authorRank = await getAuthorDelegationRank(author);
-    let rankPoints = 0;
-    if (authorRank !== null) {
-      if (authorRank >= 1 && authorRank <= 10) {
-        rankPoints = 20;
-      } else if (authorRank >= 11 && authorRank <= 20) {
-        rankPoints = 15;
-      } else if (authorRank >= 21 && authorRank <= 30) {
-        rankPoints = 10;
-      } else if (authorRank >= 31 && authorRank <= 40) {
-        rankPoints = 5;
-      }
-      voteValue += rankPoints;
-    }
-
-    // Calculate points based on HBR Stake
-    let hbrPoints = 0;
-    if (userInfo.hbrInfo?.stake) {
-      hbrPoints = Math.min(Math.floor(userInfo.hbrInfo.stake / 10), 20); // 1 point per 10 HBR, max 20 points
-      voteValue += hbrPoints;
-    }
 
     // Check if the user is verified
     const verifiedUsers = await getVerifiedUsers();
-    let verifiedPoints = 0;
     const isVerified = verifiedUsers.includes(author);
-    if (isVerified) {
-      verifiedPoints = 15;
-      voteValue += verifiedPoints;
-    }
+
+    // Check if the user is on the trail list using the API
+    const isOnTrail = await checkHiveVoteTrail(author);
+
+    // Check if the user is in the stafflist
+    const staffUsers = await getStaffUsers();
+    const isInStaffList = staffUsers.some(user => user.hiveUsername === author);
+
+    const {
+      voteValue: baseVoteValue,
+      kePoints,
+      delegationPoints,
+      pdPoints,
+      rankPoints,
+      hbrPoints,
+      verifiedPoints,
+      trailPoints,
+      staffPoints,
+    } = calculateBaseVoteScore({
+      ke: userInfo.ke,
+      percentageDelegated,
+      isPD: userInfo.isPD,
+      authorRank,
+      hbrStake: userInfo.hbrInfo?.stake,
+      isVerified,
+      isOnTrail,
+      isInStaffList,
+    });
+
+    let voteValue = baseVoteValue;
 
     // Check if the post was made in the HiveBR community
     let postedInHiveBR = false;
@@ -425,23 +491,6 @@ const processPost = async (post: any, timestamp: string) => {
         hiveBrBeneficiaryPoints = 5; // Add 5 points if the condition is met
         voteValue += hiveBrBeneficiaryPoints;
       }
-    }
-
-    // Check if the user is on the trail list using the API
-    let trailPoints = 0;
-    const isOnTrail = await checkHiveVoteTrail(author);
-    if (isOnTrail) {
-      trailPoints = 5; // Add 5 points if the user is on the trail list
-      voteValue += trailPoints;
-    }
-
-    // Check if the user is in the stafflist
-    const staffUsers = await getStaffUsers();
-    let staffPoints = 0;
-    const isInStaffList = staffUsers.some(user => user.hiveUsername === author);
-    if (isInStaffList) {
-      staffPoints = 10; // Add 10 points if the user is in the stafflist
-      voteValue += staffPoints;
     }
 
     // Ensure total points do not exceed 100
@@ -643,16 +692,15 @@ discordClient.on('messageCreate', async (message) => {
     // ...existing code for !userinfo...
     const userToGet = message.content.split(' ')[1];
     if (userToGet) {
-      let totalVote = 0;
       const userInfo = await getUserInfo(userToGet);
-      
+
       if (userInfo) {
         // Calculate Percentage Delegated
         const adjustedDelegatedHp = userInfo.delegatedHp - (userInfo.hiveBrVoterDelegation || 0);
         const adjustedPercentageDelegated = (adjustedDelegatedHp / userInfo.hp) * 100;
 
         const percentageDelegated = (userInfo.delegatedVestingShares / userInfo.vestingShares) * 100;
-  
+
         const keColor = userInfo.ke < 1.5 ? '🟢' : userInfo.ke < 3 ? '🟡' : '🔴';
         const pdColor = userInfo.isPD ? '🔴' : '🟢';
         const percentageDelegatedColor = percentageDelegated < 30 ? '🟢' : percentageDelegated < 60 ? '🟡' : '🔴';
@@ -662,7 +710,28 @@ discordClient.on('messageCreate', async (message) => {
         const authorRank = await getAuthorDelegationRank(userToGet);
 
         const csi = await getUserCsiScore(userToGet);
-  
+
+        // Same base scoring used in the real curation flow (processPost).
+        // Post-only criteria (posted in HiveBR, hive-br beneficiary) can't be
+        // known here since there's no specific post, so this is an estimate.
+        const verifiedUsers = await getVerifiedUsers();
+        const isVerified = verifiedUsers.includes(userToGet);
+        const isOnTrail = await checkHiveVoteTrail(userToGet);
+        const staffUsers = await getStaffUsers();
+        const isInStaffList = staffUsers.some(user => user.hiveUsername === userToGet);
+
+        const { voteValue: estimatedVoteValue } = calculateBaseVoteScore({
+          ke: userInfo.ke,
+          percentageDelegated: adjustedPercentageDelegated,
+          isPD: userInfo.isPD,
+          authorRank,
+          hbrStake: userInfo.hbrInfo?.stake,
+          isVerified,
+          isOnTrail,
+          isInStaffList,
+        });
+        const totalVote = userToGet === 'hive-br' ? 100 : Math.min(estimatedVoteValue, 100);
+
         const embed = {
           color: 0x0099ff, // Blue color
           title: `User Info for @${userToGet}`,
@@ -677,6 +746,7 @@ discordClient.on('messageCreate', async (message) => {
             { name: 'Hive-BR Delegation', value: userInfo.hiveBrVoterDelegation ? `${userInfo.hiveBrVoterDelegation.toFixed(3)}` : 'N/A', inline: false },
             { name: 'Ranking', value: authorRank !== null ? `#${authorRank}` : 'Not Ranked', inline: false },
             { name: 'HBR Stake', value: userInfo.hbrInfo ? userInfo.hbrInfo.stake.toString() : 'N/A', inline: false },
+            { name: 'Total Vote (estimado, sem bônus de post)', value: `${totalVote}%`, inline: false },
           ],
           footer: { text: `Requested by ${message.author.displayName}`, icon_url: message.author.displayAvatarURL() }
         };
