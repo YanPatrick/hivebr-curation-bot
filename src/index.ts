@@ -58,11 +58,11 @@ async function getHiveBrVoterDelegation(author: string): Promise<number | null> 
   }
 }
 
-async function checkSameDayVote(
+async function getSameDayPostInfo(
   author: string,
   permlink: string,
   referenceDate: Date
-): Promise<boolean> {
+): Promise<{ alreadyVotedToday: boolean; postNumberToday: number }> {
   const hiveClient = getHiveClient();
 
   try {
@@ -72,6 +72,9 @@ async function checkSameDayVote(
       '',
       10
     ]);
+
+    let earlierPostsToday = 0;
+    let alreadyVotedToday = false;
 
     for (const post of posts) {
       // Skip the original post in question
@@ -85,10 +88,10 @@ async function checkSameDayVote(
         postDate.getUTCDate() === referenceDate.getUTCDate();
 
       if (sameDay) {
+        earlierPostsToday++;
         const hasVote = post.active_votes.some((vote: any) => vote.voter === 'hive-br.voter');
         if (hasVote) {
-          console.log(postDate, " ", referenceDate);
-          return true;
+          alreadyVotedToday = true;
         }
       } else if (postDate < referenceDate) {
         // Posts are ordered, no need to continue if date is earlier
@@ -96,10 +99,10 @@ async function checkSameDayVote(
       }
     }
 
-    return false;
+    return { alreadyVotedToday, postNumberToday: earlierPostsToday + 1 };
   } catch (error) {
-    console.error(`Error checking same-day vote for @${author}:`, error);
-    return false;
+    console.error(`Error checking same-day posts for @${author}:`, error);
+    return { alreadyVotedToday: false, postNumberToday: 1 };
   }
 }
 
@@ -321,8 +324,8 @@ const processPost = async (post: any, timestamp: string) => {
 
   // Check if the author was already voted on the same day
   const referenceDate = new Date(timestamp + 'Z');
-  const alreadyVoted = await checkSameDayVote(author, permlink, referenceDate);
-  if (alreadyVoted) {
+  const { alreadyVotedToday, postNumberToday } = await getSameDayPostInfo(author, permlink, referenceDate);
+  if (alreadyVotedToday) {
     console.error(`Skipping post <${postLnk}> by @${author} because they were already voted on the same day.`);
     const channel = await getActiveChannel();
     if (channel) {
@@ -474,6 +477,7 @@ const processPost = async (post: any, timestamp: string) => {
     }
 
     embed.addFields(
+      { name: '**Post do Dia:**', value: `${postNumberToday}º post do dia`, inline: false },
       { name: '**Boas Práticas Hive:**', value: '', inline: false },
       //{ name: '**HP:**', value: `${userInfo.hp?.toFixed(3) || 'N/A'}`, inline: true },
       { name: '**KE:**', value: `${userInfo.ke?.toFixed(3) || 'N/A'} (+${kePoints}%)`, inline: false },
