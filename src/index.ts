@@ -590,8 +590,12 @@ async function processBlock(block: any): Promise<void> {
   for (const transaction of block.transactions) {
     blockNum = transaction.block_num;
 
-    if (transaction.operations[0][0] === 'comment' && transaction.operations[0][1].parent_author === '') {
-      const postData = transaction.operations[0][1];
+    const commentOp = transaction.operations.find(
+      (op: any) => op[0] === 'comment' && op[1].parent_author === ''
+    );
+
+    if (commentOp) {
+      const postData = commentOp[1];
       const { json_metadata, author } = postData;
 
       try {
@@ -599,7 +603,7 @@ async function processBlock(block: any): Promise<void> {
         if (
           Array.isArray(metadata.tags) &&
           (metadata.tags as string[]).map((tag) => tag.toLowerCase()).some(tag => tag === 'hivebr' || tag === 'hive-br')
-        ) {         
+        ) {
             const result = await processPost(postData, block.timestamp);
 
             // if (result && activeChannel) {
