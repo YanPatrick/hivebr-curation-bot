@@ -1,13 +1,52 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { promisify } from 'util';
 
 const readFile = promisify(fs.readFile);
 const writeFile = promisify(fs.writeFile);
 
-const USERS_FILE = './users.json';
-const BLACKLIST_FILE = './blacklist.json';
-const STAFF_FILE = './staff.json';
-const AUTO_FILE = './auto.json';
+// Point this at a mounted persistent volume in production (e.g. Railway
+// Volumes) — otherwise these files live on the container's ephemeral
+// filesystem and get wiped on every deploy.
+const DATA_DIR = process.env.DATA_DIR || '.';
+
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const BLACKLIST_FILE = path.join(DATA_DIR, 'blacklist.json');
+const STAFF_FILE = path.join(DATA_DIR, 'staff.json');
+const AUTO_FILE = path.join(DATA_DIR, 'auto.json');
+
+// One-time bootstrap for a freshly created (empty) volume: if DATA_DIR is
+// pointed at a persistent volume and a file isn't there yet, copy it in
+// from the committed seed snapshot. Once the file exists on the volume,
+// this is a permanent no-op — it will never overwrite live data again.
+const SEED_DIR = path.join(__dirname, '..', 'seed-data');
+
+async function seedIfMissing(seedFile: string, targetFile: string): Promise<void> {
+  if (path.resolve(seedFile) === path.resolve(targetFile)) return;
+
+  try {
+    await fs.promises.access(targetFile);
+    return;
+  } catch {
+    // target doesn't exist yet — fall through to seed it
+  }
+
+  try {
+    const seedData = await readFile(seedFile, 'utf-8');
+    await fs.promises.mkdir(path.dirname(targetFile), { recursive: true });
+    await writeFile(targetFile, seedData);
+    console.log(`Seeded ${targetFile} from ${seedFile}`);
+  } catch (error) {
+    console.error(`Could not seed ${targetFile} from ${seedFile}:`, (error as Error).message);
+  }
+}
+
+export async function seedDataFiles(): Promise<void> {
+  await seedIfMissing(path.join(SEED_DIR, 'staff.json'), STAFF_FILE);
+  await seedIfMissing(path.join(SEED_DIR, 'users.json'), USERS_FILE);
+  await seedIfMissing(path.join(SEED_DIR, 'blacklist.json'), BLACKLIST_FILE);
+  await seedIfMissing(path.join(SEED_DIR, 'auto.json'), AUTO_FILE);
+}
 
 export const getStaffUsers = async (): Promise<{ hiveUsername: string; discordId: string }[]> => {
     try {

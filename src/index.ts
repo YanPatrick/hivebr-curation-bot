@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Client as DiscordClient, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, Channel } from 'discord.js';
 import { getNextHiveClient, getHiveClient } from './hive/index';
 import { convertVestToHive, extractNumber, getVotingPower } from './hive/util';
-import { getBlacklistedUsers, getVerifiedUsers, saveVerifiedUsers, getStaffUsers, getLastProcessedBlock, updateLastProcessedBlock, saveBlacklistedUsers, saveStaffUsers, isUserInStaffList, getAutoUsers, saveAutoUsers } from './users';
+import { getBlacklistedUsers, getVerifiedUsers, saveVerifiedUsers, getStaffUsers, getLastProcessedBlock, updateLastProcessedBlock, saveBlacklistedUsers, saveStaffUsers, isUserInStaffList, getAutoUsers, saveAutoUsers, seedDataFiles } from './users';
 import { checkHivewatchers, checkHiveVoteTrail } from './services/api';
 import { getAuthorDelegationRank } from './hive/haf';
 import { hiveEngineApi } from './hive_engine';
@@ -683,7 +683,8 @@ const discordClient = new DiscordClient({
 
 discordClient.once('ready', async () => {
   console.log(`Logged in as ${discordClient.user?.tag}!`);
-  const channelId = process.env.DISCORD_CHANNEL_ID; // Get channel ID from environment variable 
+  await seedDataFiles();
+  const channelId = process.env.DISCORD_CHANNEL_ID; // Get channel ID from environment variable
   activeChannel = await getActiveChannel(channelId);
   await streamBlockchain();
   //streamBlockchain();
