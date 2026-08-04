@@ -1,4 +1,5 @@
 import { config } from 'dotenv';
+import axios from 'axios';
 import { Client as DiscordClient, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, Channel } from 'discord.js';
 import { getNextHiveClient, getHiveClient } from './hive/index';
 import { convertVestToHive, extractNumber, getVotingPower } from './hive/util';
@@ -767,7 +768,7 @@ discordClient.on('messageCreate', async (message) => {
 
   // Check if the user is in the staff list for all other commands
   const isStaff = await isUserInStaffList(message.author.id);
-  if (!isStaff && (message.content === '!help' || message.content.startsWith('!staff') || message.content.startsWith('!unstaff') || message.content.startsWith('!stafflist') || message.content.startsWith('!ban') || message.content.startsWith('!unban') || message.content.startsWith('!blacklist') || message.content.startsWith('!verified') || message.content.startsWith('!verify') || message.content.startsWith('!unverify') || message.content.startsWith('!start') || message.content.startsWith('!stop'))) {
+  if (!isStaff && (message.content === '!help' || message.content.startsWith('!staff') || message.content.startsWith('!unstaff') || message.content.startsWith('!stafflist') || message.content.startsWith('!ban') || message.content.startsWith('!unban') || message.content.startsWith('!importban') || message.content.startsWith('!blacklist') || message.content.startsWith('!verified') || message.content.startsWith('!verify') || message.content.startsWith('!unverify') || message.content.startsWith('!start') || message.content.startsWith('!stop'))) {
     message.channel.send('```\nYou do not have permission to use this command.\n```');
     return;
   }
@@ -801,6 +802,10 @@ Available Commands:
 
 8. !blacklist
     - Lists all blacklisted users.
+
+8b. !importban (with a .txt file attached)
+    - Bulk-adds every username in the attached .txt file to the blacklist
+      (one username per line, or separated by spaces/commas).
 
 9. !staff <username> <discordmention>
     - Adds a user to the staff list.
@@ -998,6 +1003,50 @@ Available Commands:
       message.channel.send(`\`\`\`**Blacklisted Users:**\n${userList}\`\`\``);
     } else {
       message.channel.send('```\nNo users are currently blacklisted.\n```');
+    }
+  } else if (message.content.startsWith('!importban')) {
+    const attachment = message.attachments.first();
+    if (!attachment) {
+      message.channel.send('```\nPlease attach a .txt file with one username per line (or separated by spaces/commas).\n```');
+      return;
+    }
+    if (!attachment.name?.toLowerCase().endsWith('.txt')) {
+      message.channel.send('```\nOnly .txt files are supported.\n```');
+      return;
+    }
+
+    try {
+      const response = await axios.get<string>(attachment.url, { responseType: 'text' });
+      const namesToAdd = Array.from(
+        new Set(
+          response.data
+            .split(/[\s,]+/)
+            .map(name => name.trim().replace(/^@/, '').toLowerCase())
+            .filter(name => name.length > 0)
+        )
+      );
+
+      if (namesToAdd.length === 0) {
+        message.channel.send('```\nNo usernames found in the attached file.\n```');
+        return;
+      }
+
+      const blacklistedUsers = await getBlacklistedUsers();
+      const alreadyBlacklisted = namesToAdd.filter(name => blacklistedUsers.includes(name));
+      const newlyAdded = namesToAdd.filter(name => !blacklistedUsers.includes(name));
+
+      if (newlyAdded.length > 0) {
+        await saveBlacklistedUsers([...blacklistedUsers, ...newlyAdded]);
+      }
+
+      let resultMessage = `Import complete: ${newlyAdded.length} user(s) added to the blacklist.`;
+      if (alreadyBlacklisted.length > 0) {
+        resultMessage += `\n${alreadyBlacklisted.length} user(s) were already blacklisted and were skipped.`;
+      }
+      message.channel.send(`\`\`\`${resultMessage}\`\`\``);
+    } catch (error) {
+      console.error('Could not process !importban attachment:', (error as Error).message);
+      message.channel.send('```\nFailed to read the attached file. Please try again.\n```');
     }
   } else if (message.content === '!start') {
     if (message.channel.isTextBased() && message.channel instanceof TextChannel) {
