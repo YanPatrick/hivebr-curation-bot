@@ -1033,7 +1033,7 @@ Available Commands:
     }
 
     const value = Number(rawValue);
-    if (rawValue === undefined || Number.isNaN(value) || value < 0 || value > 100) {
+    if (!rawValue || Number.isNaN(value) || value < 0 || value > 100) {
       message.channel.send('```\nValor invalido. Uso: !setvalue list_parceiros <valor entre 0 e 100>\n```');
       return;
     }
