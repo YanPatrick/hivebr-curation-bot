@@ -44,6 +44,7 @@ export const getPartnerVoteWeight = async (): Promise<number> => {
     const value = parseFloat(data);
     return Number.isNaN(value) ? DEFAULT_PARTNER_VOTE_WEIGHT : value;
   } catch (error) {
+    console.error(`Could not read vote weight from ${PARTNER_WEIGHT_FILE}:`, (error as Error).message);
     return DEFAULT_PARTNER_VOTE_WEIGHT;
   }
 };
