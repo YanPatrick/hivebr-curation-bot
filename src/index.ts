@@ -4,6 +4,7 @@ import { Client as DiscordClient, GatewayIntentBits, EmbedBuilder, ActionRowBuil
 import { getNextHiveClient, getHiveClient } from './hive/index';
 import { convertVestToHive, extractNumber, getVotingPower } from './hive/util';
 import { getBlacklistedUsers, getVerifiedUsers, saveVerifiedUsers, getStaffUsers, getLastProcessedBlock, updateLastProcessedBlock, saveBlacklistedUsers, saveStaffUsers, isUserInStaffList, getAutoUsers, saveAutoUsers, seedDataFiles } from './users';
+import { getPartnerUsers, savePartnerUsers, getPartnerVoteWeight, setPartnerVoteWeight, seedPartnerDataFiles } from './partners';
 import { checkHivewatchers, checkHiveVoteTrail } from './services/api';
 import { getAuthorDelegationRank } from './hive/haf';
 import { hiveEngineApi } from './hive_engine';
@@ -684,6 +685,7 @@ const discordClient = new DiscordClient({
 discordClient.once('ready', async () => {
   console.log(`Logged in as ${discordClient.user?.tag}!`);
   await seedDataFiles();
+  await seedPartnerDataFiles();
   const channelId = process.env.DISCORD_CHANNEL_ID; // Get channel ID from environment variable
   activeChannel = await getActiveChannel(channelId);
   await streamBlockchain();
@@ -769,7 +771,7 @@ discordClient.on('messageCreate', async (message) => {
 
   // Check if the user is in the staff list for all other commands
   const isStaff = await isUserInStaffList(message.author.id);
-  if (!isStaff && (message.content === '!help' || message.content.startsWith('!staff') || message.content.startsWith('!unstaff') || message.content.startsWith('!stafflist') || message.content.startsWith('!ban') || message.content.startsWith('!unban') || message.content.startsWith('!importban') || message.content.startsWith('!blacklist') || message.content.startsWith('!verified') || message.content.startsWith('!verify') || message.content.startsWith('!unverify') || message.content.startsWith('!start') || message.content.startsWith('!stop'))) {
+  if (!isStaff && (message.content === '!help' || message.content.startsWith('!staff') || message.content.startsWith('!unstaff') || message.content.startsWith('!stafflist') || message.content.startsWith('!ban') || message.content.startsWith('!unban') || message.content.startsWith('!importban') || message.content.startsWith('!blacklist') || message.content.startsWith('!verified') || message.content.startsWith('!verify') || message.content.startsWith('!unverify') || message.content.startsWith('!start') || message.content.startsWith('!stop') || message.content.startsWith('!add ') || message.content.startsWith('!remove ') || message.content.startsWith('!setvalue ') || message.content.startsWith('!list '))) {
     message.channel.send('```\nYou do not have permission to use this command.\n```');
     return;
   }
@@ -834,6 +836,18 @@ Available Commands:
 
 17. !vote <username>/<permlink> <votevalue>
    - Make a manual vote overwriting user score
+
+18. !add list_parceiros <username>
+   - Adds a user to the partner whitelist (list_parceiros)
+
+19. !remove list_parceiros <username>
+   - Removes a user from the partner whitelist (list_parceiros)
+
+20. !setvalue list_parceiros <value>
+   - Sets the fixed vote weight (0-100) used for every post from list_parceiros
+
+21. !list list_parceiros
+   - Lists users currently in list_parceiros and the current vote weight
 
 \`\`\`
     `;
@@ -963,6 +977,85 @@ Available Commands:
       message.channel.send(`\`\`\`**Auto Vote Users:**\n${userList}\`\`\``);
     } else {
       message.channel.send('```\nNo users are currently verified.\n```');
+    }
+  } else if (message.content.startsWith('!add ')) {
+    const args = message.content.split(' ');
+    const listName = args[1];
+    const nick = args[2];
+
+    if (listName !== 'list_parceiros') {
+      message.channel.send('```\nLista desconhecida. Uso: !add list_parceiros <usuario>\n```');
+      return;
+    }
+    if (!nick) {
+      message.channel.send('```\nPor favor especifique o usuario. Uso: !add list_parceiros <usuario>\n```');
+      return;
+    }
+
+    const partners = await getPartnerUsers();
+    if (!partners.includes(nick)) {
+      partners.push(nick);
+      await savePartnerUsers(partners);
+      message.channel.send(`\`\`\`Usuario @${nick} adicionado a list_parceiros.\`\`\``);
+    } else {
+      message.channel.send(`\`\`\`Usuario @${nick} ja esta na list_parceiros.\`\`\``);
+    }
+  } else if (message.content.startsWith('!remove ')) {
+    const args = message.content.split(' ');
+    const listName = args[1];
+    const nick = args[2];
+
+    if (listName !== 'list_parceiros') {
+      message.channel.send('```\nLista desconhecida. Uso: !remove list_parceiros <usuario>\n```');
+      return;
+    }
+    if (!nick) {
+      message.channel.send('```\nPor favor especifique o usuario. Uso: !remove list_parceiros <usuario>\n```');
+      return;
+    }
+
+    let partners = await getPartnerUsers();
+    if (partners.includes(nick)) {
+      partners = partners.filter(user => user !== nick);
+      await savePartnerUsers(partners);
+      message.channel.send(`\`\`\`Usuario @${nick} removido da list_parceiros.\`\`\``);
+    } else {
+      message.channel.send(`\`\`\`Usuario @${nick} nao esta na list_parceiros.\`\`\``);
+    }
+  } else if (message.content.startsWith('!setvalue ')) {
+    const args = message.content.split(' ');
+    const listName = args[1];
+    const rawValue = args[2];
+
+    if (listName !== 'list_parceiros') {
+      message.channel.send('```\nLista desconhecida. Uso: !setvalue list_parceiros <valor>\n```');
+      return;
+    }
+
+    const value = Number(rawValue);
+    if (rawValue === undefined || Number.isNaN(value) || value < 0 || value > 100) {
+      message.channel.send('```\nValor invalido. Uso: !setvalue list_parceiros <valor entre 0 e 100>\n```');
+      return;
+    }
+
+    await setPartnerVoteWeight(value);
+    message.channel.send(`\`\`\`Peso de voto da list_parceiros definido para ${value}%.\`\`\``);
+  } else if (message.content.startsWith('!list ')) {
+    const args = message.content.split(' ');
+    const listName = args[1];
+
+    if (listName !== 'list_parceiros') {
+      message.channel.send('```\nLista desconhecida. Uso: !list list_parceiros\n```');
+      return;
+    }
+
+    const partners = await getPartnerUsers();
+    const weight = await getPartnerVoteWeight();
+    if (partners.length > 0) {
+      const userList = partners.sort().map(user => `- @${user}`).join('\n');
+      message.channel.send(`\`\`\`**list_parceiros (peso atual: ${weight}%):**\n${userList}\`\`\``);
+    } else {
+      message.channel.send(`\`\`\`list_parceiros esta vazia (peso atual: ${weight}%).\`\`\``);
     }
   } else if (message.content.startsWith('!ban ')) {
     const userToBan = message.content.split(' ')[1];
