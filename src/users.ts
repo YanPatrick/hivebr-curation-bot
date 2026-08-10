@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
+import { seedIfMissing } from './data-files';
 
 const readFile = promisify(fs.readFile);
 const writeFile = promisify(fs.writeFile);
@@ -20,26 +21,6 @@ const AUTO_FILE = path.join(DATA_DIR, 'auto.json');
 // from the committed seed snapshot. Once the file exists on the volume,
 // this is a permanent no-op — it will never overwrite live data again.
 const SEED_DIR = path.join(__dirname, '..', 'seed-data');
-
-async function seedIfMissing(seedFile: string, targetFile: string): Promise<void> {
-  if (path.resolve(seedFile) === path.resolve(targetFile)) return;
-
-  try {
-    await fs.promises.access(targetFile);
-    return;
-  } catch {
-    // target doesn't exist yet — fall through to seed it
-  }
-
-  try {
-    const seedData = await readFile(seedFile, 'utf-8');
-    await fs.promises.mkdir(path.dirname(targetFile), { recursive: true });
-    await writeFile(targetFile, seedData);
-    console.log(`Seeded ${targetFile} from ${seedFile}`);
-  } catch (error) {
-    console.error(`Could not seed ${targetFile} from ${seedFile}:`, (error as Error).message);
-  }
-}
 
 export async function seedDataFiles(): Promise<void> {
   await seedIfMissing(path.join(SEED_DIR, 'staff.json'), STAFF_FILE);
