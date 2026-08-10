@@ -586,6 +586,99 @@ const processPost = async (post: any, timestamp: string) => {
   return null;
 };
 
+// Parallel to processPost, but for authors on the partner whitelist
+// (list_parceiros) instead of the hivebr/hive-br tag. Skips the
+// community scoring engine entirely and uses a fixed, staff-configured
+// vote weight instead.
+const processPartnerPost = async (post: any, timestamp: string) => {
+  const { author, permlink } = post;
+  const postLnk = `https://peakd.com/@${author}/${permlink}`;
+
+  const blacklistedUsers = await getBlacklistedUsers();
+  if (blacklistedUsers.includes(author)) {
+    console.error(`Skipping partner post <${postLnk}> by blacklisted user @${author}`);
+    return;
+  }
+
+  const hivewatchersList = await checkHivewatchers();
+  if (hivewatchersList.includes(author)) {
+    console.error(`Skipping partner post <${postLnk}> by user @${author} flagged by Hivewatchers.`);
+    const channel = await getActiveChannel();
+    if (channel) {
+      await channel.send(`Skipping post <${postLnk}> by @${author}: User is flagged by Hivewatchers.`);
+    }
+    return;
+  }
+
+  const postInfo = await getPostInfo(author, permlink);
+  if (!postInfo) {
+    console.error(`Failed to fetch partner post info for @${author}/${permlink}`);
+    return;
+  }
+
+  const postCreatedTime = new Date(postInfo.created).getTime();
+  const providedTimestamp = new Date(timestamp).getTime();
+  if (providedTimestamp < postCreatedTime || providedTimestamp > postCreatedTime + 6000) {
+    console.log(`Partner post @${author}/${permlink} was created outside the allowed timestamp range. Skipping.`);
+    return;
+  }
+
+  const referenceDate = new Date(timestamp + 'Z');
+  const { alreadyVotedToday } = await getSameDayPostInfo(author, permlink, referenceDate);
+  if (alreadyVotedToday) {
+    console.error(`Skipping partner post <${postLnk}> by @${author} because they were already voted on the same day.`);
+    const channel = await getActiveChannel();
+    if (channel) {
+      await channel.send(`Skipping post <${postLnk}> by @${author}: Already voted on the same day.`);
+    }
+    return;
+  }
+
+  const { title, body } = postInfo;
+  const voteValue = await getPartnerVoteWeight();
+  const postLink = `https://peakd.com/@${author}/${permlink}`;
+
+  let thumbnailUrl: string | null = null;
+  const imageRegex = /!\[.*?\]\((.*?)\)/;
+  const match = body.match(imageRegex);
+  if (match && match[1]) {
+    thumbnailUrl = match[1];
+  }
+
+  const safeTitle = title || 'Untitled';
+
+  const embed = new EmbedBuilder()
+    .setColor(0x9b59b6) // Purple: visually distinct from the community-post blue (0x0099ff)
+    .setAuthor({ name: `@${author}`, iconURL: `https://images.hive.blog/u/${author}/avatar`, url: `https://peakd.com/@${author}` })
+    .setTitle(`**${safeTitle}**`)
+    .setURL(postLink);
+
+  if (thumbnailUrl) {
+    embed.setThumbnail(thumbnailUrl);
+  }
+
+  embed.addFields(
+    { name: '**🤝 Post de Parceria**', value: `Voto fixo: ${voteValue}%`, inline: false },
+  );
+
+  const channel = await getActiveChannel();
+
+  const voteButton = new ButtonBuilder()
+    .setCustomId(`${author}/${permlink}/${voteValue}`)
+    .setLabel(' 🚀 VOTE! ')
+    .setStyle(ButtonStyle.Primary);
+
+  const viewPostButton = new ButtonBuilder()
+    .setLabel('View Post')
+    .setStyle(ButtonStyle.Link)
+    .setURL(postLink);
+
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(voteButton, viewPostButton);
+  if (channel) await channel.send({ embeds: [embed], components: [buttons] });
+
+  return null;
+};
+
 async function processBlock(block: any): Promise<void> {
   let blockNum = 0;
 
@@ -600,21 +693,23 @@ async function processBlock(block: any): Promise<void> {
       const postData = commentOp[1];
       const { json_metadata, author } = postData;
 
+      let hasHiveBrTag = false;
       try {
         const metadata = JSON.parse(json_metadata);
-        if (
+        hasHiveBrTag =
           Array.isArray(metadata.tags) &&
-          (metadata.tags as string[]).map((tag) => tag.toLowerCase()).some(tag => tag === 'hivebr' || tag === 'hive-br')
-        ) {
-            const result = await processPost(postData, block.timestamp);
-
-            // if (result && activeChannel) {
-            //   const { embed, buttons } = result;
-            //   await activeChannel.send({ embeds: [embed], components: [buttons] });
-            // }
-        }
+          (metadata.tags as string[]).map((tag) => tag.toLowerCase()).some(tag => tag === 'hivebr' || tag === 'hive-br');
       } catch (error) {
         console.error('Error parsing json_metadata or checking tags:', error);
+      }
+
+      if (hasHiveBrTag) {
+        await processPost(postData, block.timestamp);
+      } else {
+        const partnerUsers = await getPartnerUsers();
+        if (partnerUsers.includes(author)) {
+          await processPartnerPost(postData, block.timestamp);
+        }
       }
     }
   }
