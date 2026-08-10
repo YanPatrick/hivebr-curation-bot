@@ -613,6 +613,10 @@ const processPartnerPost = async (post: any, timestamp: string) => {
   const postInfo = await getPostInfo(author, permlink);
   if (!postInfo) {
     console.error(`Failed to fetch partner post info for @${author}/${permlink}`);
+    const channel = await getActiveChannel();
+    if (channel) {
+      await channel.send(`Skipping post <${postLnk}> by @${author}: Failed to fetch post info.`);
+    }
     return;
   }
 
@@ -681,6 +685,7 @@ const processPartnerPost = async (post: any, timestamp: string) => {
 
 async function processBlock(block: any): Promise<void> {
   let blockNum = 0;
+  const partnerUsers = await getPartnerUsers();
 
   for (const transaction of block.transactions) {
     blockNum = transaction.block_num;
@@ -704,13 +709,14 @@ async function processBlock(block: any): Promise<void> {
         continue;
       }
 
-      if (hasHiveBrTag) {
-        await processPost(postData, block.timestamp);
-      } else {
-        const partnerUsers = await getPartnerUsers();
-        if (partnerUsers.includes(author)) {
+      try {
+        if (hasHiveBrTag) {
+          await processPost(postData, block.timestamp);
+        } else if (partnerUsers.includes(author)) {
           await processPartnerPost(postData, block.timestamp);
         }
+      } catch (error) {
+        console.error(`Error processing post by @${author}:`, error);
       }
     }
   }
@@ -1077,7 +1083,7 @@ Available Commands:
   } else if (message.content.startsWith('!add ')) {
     const args = message.content.split(' ');
     const listName = args[1];
-    const nick = args[2];
+    const nick = args[2]?.replace(/^@/, '').toLowerCase();
 
     if (listName !== 'list_parceiros') {
       message.channel.send('```\nLista desconhecida. Uso: !add list_parceiros <usuario>\n```');
@@ -1099,7 +1105,7 @@ Available Commands:
   } else if (message.content.startsWith('!remove ')) {
     const args = message.content.split(' ');
     const listName = args[1];
-    const nick = args[2];
+    const nick = args[2]?.replace(/^@/, '').toLowerCase();
 
     if (listName !== 'list_parceiros') {
       message.channel.send('```\nLista desconhecida. Uso: !remove list_parceiros <usuario>\n```');

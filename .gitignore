@@ -6,4 +6,6 @@ node_modules/
 /trail.json
 /users.json
 /auto.json
+/partners.json
+/partner-vote-weight.txt
 /seed-data/
