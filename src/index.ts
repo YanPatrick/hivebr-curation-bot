@@ -701,6 +701,7 @@ async function processBlock(block: any): Promise<void> {
           (metadata.tags as string[]).map((tag) => tag.toLowerCase()).some(tag => tag === 'hivebr' || tag === 'hive-br');
       } catch (error) {
         console.error('Error parsing json_metadata or checking tags:', error);
+        continue;
       }
 
       if (hasHiveBrTag) {
