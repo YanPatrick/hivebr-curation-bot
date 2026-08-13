@@ -696,14 +696,18 @@ async function processBlock(block: any): Promise<void> {
 
     if (commentOp) {
       const postData = commentOp[1];
-      const { json_metadata, author } = postData;
+      const { json_metadata, author, permlink } = postData;
 
       let hasHiveBrTag = false;
+      let isCrosspost = false;
       try {
         const metadata = JSON.parse(json_metadata);
         hasHiveBrTag =
           Array.isArray(metadata.tags) &&
           (metadata.tags as string[]).map((tag) => tag.toLowerCase()).some(tag => tag === 'hivebr' || tag === 'hive-br');
+        isCrosspost =
+          Boolean(metadata.original_author) ||
+          (Array.isArray(metadata.tags) && (metadata.tags as string[]).map((tag) => tag.toLowerCase()).includes('cross-post'));
       } catch (error) {
         console.error('Error parsing json_metadata or checking tags:', error);
         continue;
@@ -713,7 +717,11 @@ async function processBlock(block: any): Promise<void> {
         if (hasHiveBrTag) {
           await processPost(postData, block.timestamp);
         } else if (partnerUsers.includes(author)) {
-          await processPartnerPost(postData, block.timestamp);
+          if (isCrosspost) {
+            console.log(`Skipping crosspost by partner @${author}/${permlink}.`);
+          } else {
+            await processPartnerPost(postData, block.timestamp);
+          }
         }
       } catch (error) {
         console.error(`Error processing post by @${author}:`, error);
