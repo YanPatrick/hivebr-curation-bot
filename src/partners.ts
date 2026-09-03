@@ -20,10 +20,19 @@ export async function seedPartnerDataFiles(): Promise<void> {
   await seedIfMissing(path.join(SEED_DIR, 'partner-vote-weight.txt'), PARTNER_WEIGHT_FILE);
 }
 
+// processBlock() calls getPartnerUsers() on every Hive block (~every 3s) to
+// check crosspost/partner authorship, so this is kept in memory instead of
+// hitting disk on every call. Populated lazily on first read and kept in
+// sync by savePartnerUsers() on every write.
+let partnerUsersCache: string[] | null = null;
+
 export const getPartnerUsers = async (): Promise<string[]> => {
+  if (partnerUsersCache) return [...partnerUsersCache];
+
   try {
     const data = await readFile(PARTNERS_FILE, 'utf-8');
-    return JSON.parse(data);
+    partnerUsersCache = JSON.parse(data);
+    return [...partnerUsersCache!];
   } catch (error) {
     console.error(`Could not read users from ${PARTNERS_FILE}:`, (error as Error).message);
     return [];
@@ -33,6 +42,7 @@ export const getPartnerUsers = async (): Promise<string[]> => {
 export const savePartnerUsers = async (users: string[]): Promise<void> => {
   try {
     await writeFile(PARTNERS_FILE, JSON.stringify(users, null, 2));
+    partnerUsersCache = [...users];
   } catch (error) {
     console.error(`Could not write users to ${PARTNERS_FILE}:`, (error as Error).message);
   }
