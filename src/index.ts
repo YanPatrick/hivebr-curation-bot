@@ -13,6 +13,12 @@ import { getUserCsiScore } from './hive/csi';
 
 config(); // Load .env variables
 
+// How long after a post's creation we still accept the "hivebr" tag as
+// belonging to the original post rather than a stale edit. Some posting
+// tools (e.g. wiseagent) create the post first and attach the tag via a
+// follow-up edit a few minutes later, so this can't be just a few seconds.
+const POST_TAG_TOLERANCE_MS = 10 * 60 * 1000; // 10 minutes
+
 let stream: any;
 
 // Global variable to store the active channel
@@ -412,8 +418,7 @@ const processPost = async (post: any, timestamp: string) => {
   const postCreatedTime = new Date(postInfo.created).getTime();
   const providedTimestamp = new Date(timestamp).getTime();
   console.log(`Post created time: ${postCreatedTime}, Provided timestamp: ${providedTimestamp}`);
-  // Allow up to 5 seconds difference
-  if (providedTimestamp < postCreatedTime || providedTimestamp > postCreatedTime + 6000) {
+  if (providedTimestamp < postCreatedTime || providedTimestamp > postCreatedTime + POST_TAG_TOLERANCE_MS) {
     console.log(`Post @${author}/${permlink} was created outside the allowed timestamp range. Skipping.`);
     // if (activeChannel) {
     //   await activeChannel.send(`Skipping post <${postLnk}> by @${author}: This is a post edit, not a new post.`);
@@ -629,7 +634,7 @@ const processPartnerPost = async (post: any, timestamp: string) => {
 
   const postCreatedTime = new Date(postInfo.created).getTime();
   const providedTimestamp = new Date(timestamp).getTime();
-  if (providedTimestamp < postCreatedTime || providedTimestamp > postCreatedTime + 6000) {
+  if (providedTimestamp < postCreatedTime || providedTimestamp > postCreatedTime + POST_TAG_TOLERANCE_MS) {
     console.log(`Partner post @${author}/${permlink} was created outside the allowed timestamp range. Skipping.`);
     return;
   }
