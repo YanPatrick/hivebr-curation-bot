@@ -18,6 +18,14 @@ let stream: any;
 // Global variable to store the active channel
 let activeChannel: TextChannel | null = null;
 
+// Hive's `created` timestamp doesn't change on edit, so a post that gets
+// edited within processBlock's timestamp window (see processPost/
+// processPartnerPost) re-broadcasts a "comment" op that looks exactly like
+// the original creation. This guards against reprocessing the same
+// author/permlink more than once per process lifetime, regardless of how
+// many times its comment op is observed.
+const processedPosts = new Set<string>();
+
 async function getActiveChannel(channelId?: string) {
   if (channelId) {
     try {
@@ -415,7 +423,7 @@ const processPost = async (post: any, timestamp: string) => {
 
   // Check if the author was already voted on the same day
   const referenceDate = new Date(timestamp + 'Z');
-  const { alreadyVotedToday, postNumberToday } = await getSameDayPostInfo(author, permlink, referenceDate);
+  const { alreadyVotedToday } = await getSameDayPostInfo(author, permlink, referenceDate);
   if (alreadyVotedToday) {
     console.error(`Skipping post <${postLnk}> by @${author} because they were already voted on the same day.`);
     const channel = await getActiveChannel();
@@ -528,7 +536,6 @@ const processPost = async (post: any, timestamp: string) => {
     }
 
     embed.addFields(
-      { name: '**Post do Dia:**', value: `${postNumberToday}º post do dia`, inline: false },
       { name: '**Boas Práticas Hive:**', value: '', inline: false },
       //{ name: '**HP:**', value: `${userInfo.hp?.toFixed(3) || 'N/A'}`, inline: true },
       { name: '**KE:**', value: `${userInfo.ke?.toFixed(3) || 'N/A'} (+${kePoints}%)`, inline: false },
@@ -713,15 +720,22 @@ async function processBlock(block: any): Promise<void> {
         continue;
       }
 
+      const postKey = `${author}/${permlink}`;
+
       try {
-        if (hasHiveBrTag) {
-          await processPost(postData, block.timestamp);
-        } else if (partnerUsers.includes(author)) {
-          if (isCrosspost) {
-            console.log(`Skipping crosspost by partner @${author}/${permlink}.`);
+        if (hasHiveBrTag || (partnerUsers.includes(author) && !isCrosspost)) {
+          if (processedPosts.has(postKey)) {
+            console.log(`Skipping duplicate comment op for already-processed post @${postKey} (likely a post edit).`);
           } else {
-            await processPartnerPost(postData, block.timestamp);
+            processedPosts.add(postKey);
+            if (hasHiveBrTag) {
+              await processPost(postData, block.timestamp);
+            } else {
+              await processPartnerPost(postData, block.timestamp);
+            }
           }
+        } else if (partnerUsers.includes(author) && isCrosspost) {
+          console.log(`Skipping crosspost by partner @${author}/${permlink}.`);
         }
       } catch (error) {
         console.error(`Error processing post by @${author}:`, error);
