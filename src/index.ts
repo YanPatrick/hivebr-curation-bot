@@ -1,6 +1,6 @@
 import { config } from 'dotenv';
 import axios from 'axios';
-import { Client as DiscordClient, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, Channel } from 'discord.js';
+import { Client as DiscordClient, GatewayIntentBits, Options, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, Channel } from 'discord.js';
 import { getNextHiveClient, getHiveClient } from './hive/index';
 import { convertVestToHive, extractNumber, getVotingPower } from './hive/util';
 import { getBlacklistedUsers, getVerifiedUsers, saveVerifiedUsers, getStaffUsers, getLastProcessedBlock, updateLastProcessedBlock, saveBlacklistedUsers, saveStaffUsers, isUserInStaffList, getAutoUsers, saveAutoUsers, seedDataFiles } from './users';
@@ -10,8 +10,15 @@ import { getAuthorDelegationRank } from './hive/haf';
 import { hiveEngineApi } from './hive_engine';
 import { vote, comment } from './hive/index';
 import { getUserCsiScore } from './hive/csi';
+import { parseQuietHours, isQuietTime, msUntilQuietStart, cronScheduleForWakeUp } from './quiet-hours';
 
 config(); // Load .env variables
+
+const quietWindow = parseQuietHours(process.env.QUIET_HOURS);
+
+// How long to wait for blocks already being processed (e.g. a vote being
+// broadcast) before exiting for the quiet window.
+const QUIET_SHUTDOWN_GRACE_MS = 60 * 1000;
 
 // How long after a post's creation we still accept the "hivebr" tag as
 // belonging to the original post rather than a stale edit. Some posting
@@ -20,6 +27,8 @@ config(); // Load .env variables
 const POST_TAG_TOLERANCE_MS = 10 * 60 * 1000; // 10 minutes
 
 let stream: any;
+let blocksInFlight = 0;
+let highestProcessedBlock = 0;
 
 // Global variable to store the active channel
 let activeChannel: TextChannel | null = null;
@@ -696,12 +705,13 @@ const processPartnerPost = async (post: any, timestamp: string) => {
 };
 
 async function processBlock(block: any): Promise<void> {
-  let blockNum = 0;
+  // The first 4 bytes of a Hive block id are the block number. Reading it
+  // from the transactions instead would yield 0 for an empty block, which
+  // would wipe BLOCK_FILE and make the next boot skip to the latest block.
+  const blockNum = parseInt(block.block_id.slice(0, 8), 16);
   const partnerUsers = await getPartnerUsers();
 
   for (const transaction of block.transactions) {
-    blockNum = transaction.block_num;
-
     const commentOp = transaction.operations.find(
       (op: any) => op[0] === 'comment' && op[1].parent_author === ''
     );
@@ -749,7 +759,13 @@ async function processBlock(block: any): Promise<void> {
   }
 
   //console.log(`Block ${blockNum} processed.`);
-  await updateLastProcessedBlock(process.env.BLOCK_FILE || '', blockNum);
+  // Blocks are processed concurrently (the stream doesn't wait for this
+  // handler), so a slow block can finish after a newer one. Only move
+  // forward, or a restart would reprocess posts that were already handled.
+  if (blockNum > highestProcessedBlock) {
+    highestProcessedBlock = blockNum;
+    await updateLastProcessedBlock(process.env.BLOCK_FILE || '', blockNum);
+  }
 }
 
 const streamBlockchain = async (retryCount = 0) => {
@@ -786,10 +802,13 @@ const streamBlockchain = async (retryCount = 0) => {
   }
 
   stream.on('data', async (block: any) => {
+    blocksInFlight++;
     try {
       await processBlock(block);
     } catch (error) {
       console.error('Error processing block:', error);
+    } finally {
+      blocksInFlight--;
     }
   });
 
@@ -807,8 +826,47 @@ const streamBlockchain = async (retryCount = 0) => {
   });
 };
 
+// Exits the process for the quiet window instead of just pausing the stream:
+// Railway bills memory for as long as the process is alive. BLOCK_FILE keeps
+// the last finished block, so the next boot (Railway cron) resumes from there.
+async function shutdownForQuietHours(): Promise<void> {
+  console.log('Quiet hours started. Stopping the block stream and exiting...');
+
+  if (stream) {
+    stream.removeAllListeners();
+    stream = null;
+  }
+
+  const deadline = Date.now() + QUIET_SHUTDOWN_GRACE_MS;
+  while (blocksInFlight > 0 && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  if (blocksInFlight > 0) {
+    console.warn(`Exiting with ${blocksInFlight} block(s) still in flight; they will be reprocessed on the next boot.`);
+  }
+
+  try {
+    const channel = await getActiveChannel();
+    if (channel) {
+      await channel.send(`\`\`\`\nModo noturno: bot pausado até ${String(quietWindow!.endHour).padStart(2, '0')}h. Posts publicados nesse período serão processados quando ele voltar.\n\`\`\``);
+    }
+  } catch (error) {
+    console.error('Could not announce quiet hours on Discord:', error);
+  }
+
+  await discordClient.destroy();
+  process.exit(0);
+}
+
 const discordClient = new DiscordClient({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  // The bot only reacts to messages as they arrive and never reads old ones
+  // back, so caching every message seen (200 per channel by default) is just
+  // memory that Railway bills for.
+  makeCache: Options.cacheWithLimits({
+    ...Options.DefaultMakeCacheSettings,
+    MessageManager: 0,
+  }),
 });
 
 discordClient.once('ready', async () => {
@@ -819,6 +877,12 @@ discordClient.once('ready', async () => {
   activeChannel = await getActiveChannel(channelId);
   await streamBlockchain();
   //streamBlockchain();
+
+  if (quietWindow) {
+    const delayMs = msUntilQuietStart(quietWindow);
+    console.log(`Quiet hours enabled (${process.env.QUIET_HOURS} Brasília time). Exiting in ${Math.round(delayMs / 60000)} minutes.`);
+    setTimeout(shutdownForQuietHours, delayMs);
+  }
 });
 
 discordClient.on('messageCreate', async (message) => {
@@ -1394,6 +1458,14 @@ discordClient.on('interactionCreate', async (interaction) => {
     }
   }  
 });
+
+if (quietWindow && isQuietTime(quietWindow)) {
+  // Booted during the quiet window (e.g. a deploy at night): don't stay up
+  // until the next night. The Railway cron brings the bot back at the end
+  // of the window.
+  console.log(`Inside quiet hours (${process.env.QUIET_HOURS} Brasília time). Exiting; the Railway cron "${cronScheduleForWakeUp(quietWindow)}" (UTC) restarts the bot.`);
+  process.exit(0);
+}
 
 discordClient.login(process.env.DISCORD_TOKEN);
 
