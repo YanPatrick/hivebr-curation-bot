@@ -45,10 +45,20 @@ export function isQuietTime(window: QuietWindow, now = new Date()): boolean {
   return hour >= window.startHour || hour < window.endHour;
 }
 
-export function msUntilQuietStart(window: QuietWindow, now = new Date()): number {
-  const hoursAhead = (window.startHour - brasiliaHour(now) + 24) % 24 || 24;
+// Milliseconds until the next time the Brasília clock reads `hour`:00.
+// Always > 0: at exactly `hour`:00 it returns a full day.
+function msUntilBrasiliaHour(hour: number, now: Date): number {
+  const hoursAhead = (hour - brasiliaHour(now) + 24) % 24 || 24;
   const startOfCurrentHour = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS;
   return startOfCurrentHour + hoursAhead * HOUR_MS - now.getTime();
+}
+
+export function msUntilQuietStart(window: QuietWindow, now = new Date()): number {
+  return msUntilBrasiliaHour(window.startHour, now);
+}
+
+export function msUntilQuietEnd(window: QuietWindow, now = new Date()): number {
+  return msUntilBrasiliaHour(window.endHour, now);
 }
 
 // Railway cron schedules are in UTC.
