@@ -1,11 +1,12 @@
 // Optional nightly downtime to cut Railway compute costs. Railway bills
 // memory for as long as the process is alive, so pausing the block stream
-// isn't enough: during the quiet window the process exits completely, and a
-// Railway cron schedule boots it again when the window ends. On boot the
-// stream resumes from BLOCK_FILE, so posts published overnight are still
-// processed — just later.
+// isn't enough: during the quiet window the bot goes completely silent,
+// Railway Serverless puts the service to sleep, and a waker service wakes it
+// at the end of the window (see sleep-mode.ts). On boot the stream resumes
+// from BLOCK_FILE, so posts published overnight are still processed — just
+// later.
 //
-// QUIET_HOURS="01-09" means 01:00 to 09:00 Brasília time. Unset = always on.
+// QUIET_HOURS="02-09" means 02:00 to 09:00 Brasília time. Unset = always on.
 
 // Brasília has had no daylight saving time since 2019.
 const BRASILIA_UTC_OFFSET_HOURS = -3;
@@ -59,10 +60,4 @@ export function msUntilQuietStart(window: QuietWindow, now = new Date()): number
 
 export function msUntilQuietEnd(window: QuietWindow, now = new Date()): number {
   return msUntilBrasiliaHour(window.endHour, now);
-}
-
-// Railway cron schedules are in UTC.
-export function cronScheduleForWakeUp(window: QuietWindow): string {
-  const utcHour = (window.endHour - BRASILIA_UTC_OFFSET_HOURS) % 24;
-  return `0 ${utcHour} * * *`;
 }

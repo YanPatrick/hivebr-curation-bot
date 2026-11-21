@@ -10,15 +10,27 @@ import { getAuthorDelegationRank } from './hive/haf';
 import { hiveEngineApi } from './hive_engine';
 import { vote, comment } from './hive/index';
 import { getUserCsiScore } from './hive/csi';
-import { parseQuietHours, isQuietTime, msUntilQuietStart, cronScheduleForWakeUp } from './quiet-hours';
+import { parseQuietHours, isQuietTime, msUntilQuietStart } from './quiet-hours';
+import { startSleepController, SleepController } from './sleep-mode';
+import { stopStream } from './hive/stream';
+import { startMemoryLog, logVolumeUsage } from './diagnostics';
 
 config(); // Load .env variables
 
 const quietWindow = parseQuietHours(process.env.QUIET_HOURS);
 
 // How long to wait for blocks already being processed (e.g. a vote being
-// broadcast) before exiting for the quiet window.
+// broadcast) before going to sleep for the quiet window.
 const QUIET_SHUTDOWN_GRACE_MS = 60 * 1000;
+
+const MEMORY_LOG_INTERVAL_MS = 30 * 60 * 1000;
+
+// Set once the bot starts going to sleep. A stream reconnect that was already
+// waiting (the 'error'/'end' handlers retry after 5s) must not start a new
+// stream: it would keep polling all night and Railway would never sleep us.
+let goingToSleep = false;
+let sleepController: SleepController | null = null;
+let stopMemoryLog: (() => void) | null = null;
 
 // How long after a post's creation we still accept the "hivebr" tag as
 // belonging to the original post rather than a stale edit. Some posting
@@ -769,13 +781,14 @@ async function processBlock(block: any): Promise<void> {
 }
 
 const streamBlockchain = async (retryCount = 0) => {
+  if (goingToSleep) return;
+
   const MAX_RETRIES = 5;
   const lastProcessedBlock = await getLastProcessedBlock(process.env.BLOCK_FILE || '');
   let hiveClient = getNextHiveClient();
 
-  if (stream) {
-    stream.removeAllListeners();
-  }
+  stopStream(stream);
+  stream = null;
 
   try {
     if (lastProcessedBlock) {
@@ -826,36 +839,41 @@ const streamBlockchain = async (retryCount = 0) => {
   });
 };
 
-// Exits the process for the quiet window instead of just pausing the stream:
-// Railway bills memory for as long as the process is alive. BLOCK_FILE keeps
-// the last finished block, so the next boot (Railway cron) resumes from there.
-async function shutdownForQuietHours(): Promise<void> {
-  console.log('Quiet hours started. Stopping the block stream and exiting...');
+// Goes silent for the quiet window: no Discord, no block stream, no periodic
+// logs. With no outbound traffic, Railway Serverless puts the service to sleep
+// and stops billing it; the waker service brings it back at the end of the
+// window (see sleep-mode.ts). BLOCK_FILE keeps the last finished block, so the
+// next boot resumes from there and processes the posts published overnight.
+async function goToSleep(): Promise<void> {
+  if (goingToSleep) return;
+  goingToSleep = true;
+  console.log('Quiet hours started. Stopping the block stream and going to sleep...');
 
-  if (stream) {
-    stream.removeAllListeners();
-    stream = null;
-  }
+  stopStream(stream);
+  stream = null;
 
   const deadline = Date.now() + QUIET_SHUTDOWN_GRACE_MS;
   while (blocksInFlight > 0 && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 500));
   }
   if (blocksInFlight > 0) {
-    console.warn(`Exiting with ${blocksInFlight} block(s) still in flight; they will be reprocessed on the next boot.`);
+    console.warn(`Going to sleep with ${blocksInFlight} block(s) still in flight; if they don't finish they will be reprocessed on the next boot.`);
   }
 
   try {
     const channel = await getActiveChannel();
     if (channel) {
-      await channel.send(`\`\`\`\nModo noturno: bot pausado até ${String(quietWindow!.endHour).padStart(2, '0')}h. Posts publicados nesse período serão processados quando ele voltar.\n\`\`\``);
+      await channel.send(`\`\`\`\nModo noturno: bot dormindo até ${String(quietWindow!.endHour).padStart(2, '0')}h. Posts publicados nesse período serão processados quando ele acordar.\n\`\`\``);
     }
   } catch (error) {
     console.error('Could not announce quiet hours on Discord:', error);
   }
 
+  stopMemoryLog?.();
+  stopMemoryLog = null;
   await discordClient.destroy();
-  process.exit(0);
+  sleepController!.sleep();
+  console.log('Dormindo: sem tráfego de rede até o despertador.');
 }
 
 const discordClient = new DiscordClient({
@@ -878,10 +896,14 @@ discordClient.once('ready', async () => {
   await streamBlockchain();
   //streamBlockchain();
 
+  stopMemoryLog = startMemoryLog(MEMORY_LOG_INTERVAL_MS);
+
   if (quietWindow) {
-    const delayMs = msUntilQuietStart(quietWindow);
-    console.log(`Quiet hours enabled (${process.env.QUIET_HOURS} Brasília time). Exiting in ${Math.round(delayMs / 60000)} minutes.`);
-    setTimeout(shutdownForQuietHours, delayMs);
+    // Login can finish just after the window started (boot at 01:59:59):
+    // sleep right away instead of waiting for tomorrow's window.
+    const delayMs = isQuietTime(quietWindow) ? 0 : msUntilQuietStart(quietWindow);
+    console.log(`Quiet hours enabled (${process.env.QUIET_HOURS} Brasília time). Going to sleep in ${Math.round(delayMs / 60000)} minutes.`);
+    setTimeout(goToSleep, delayMs);
   }
 });
 
@@ -1345,7 +1367,7 @@ Available Commands:
     await streamBlockchain();
   } else if (message.content === '!stop') {
     if (stream) {
-      stream.removeAllListeners();
+      stopStream(stream);
       stream = null;
       activeChannel = null; // Clear the active channel
       message.channel.send('```\nBlockchain stream stopped.\n```');
@@ -1459,14 +1481,39 @@ discordClient.on('interactionCreate', async (interaction) => {
   }  
 });
 
-if (quietWindow && isQuietTime(quietWindow)) {
-  // Booted during the quiet window (e.g. a deploy at night): don't stay up
-  // until the next night. The Railway cron brings the bot back at the end
-  // of the window.
-  console.log(`Inside quiet hours (${process.env.QUIET_HOURS} Brasília time). Exiting; the Railway cron "${cronScheduleForWakeUp(quietWindow)}" (UTC) restarts the bot.`);
-  process.exit(0);
+async function boot(): Promise<void> {
+  if (process.env.DATA_DIR) {
+    await logVolumeUsage(process.env.DATA_DIR);
+  }
+
+  if (quietWindow) {
+    sleepController = await startSleepController({
+      window: quietWindow,
+      port: Number(process.env.PORT) || 8080,
+      onWake: () => {
+        // railway.json restarts the bot (restartPolicyType ALWAYS) with a
+        // fresh process that boots outside the window.
+        console.log('Fim da janela de sono: reiniciando o bot.');
+        process.exit(0);
+      },
+    });
+
+    if (isQuietTime(quietWindow)) {
+      // Booted during the quiet window (a deploy at night, or a stray request
+      // woke the service): stay silent so Railway puts it back to sleep.
+      goingToSleep = true;
+      console.log(`Boot dentro da janela de sono (QUIET_HOURS=${process.env.QUIET_HOURS}): dormindo sem conectar ao Discord.`);
+      sleepController.sleep();
+      return;
+    }
+  }
+
+  await discordClient.login(process.env.DISCORD_TOKEN);
 }
 
-discordClient.login(process.env.DISCORD_TOKEN);
+boot().catch((error) => {
+  console.error('Failed to start the bot:', error);
+  process.exit(1);
+});
 
 
