@@ -140,7 +140,11 @@ Siga nesta ordem. Até o passo 5 o bot se comporta exatamente como hoje.
 4. **Crie o despertador:** no projeto, **+ New → Docker Image →
    `curlimages/curl`**. Depois, em Settings:
    - **Cron Schedule:** `0,15,30 12 * * *` (09h00, 09h15 e 09h30 de Brasília;
-     o Railway usa UTC);
+     o Railway usa UTC). **Esse horário depende do fim de `QUIET_HOURS`.** Se a
+     janela mudar, o cron tem que mudar junto; senão o despertador chama o
+     bot ainda dentro da janela e ele dorme o dia todo. O bot mostra no log, ao
+     iniciar, o cron esperado ("O Cron Schedule do serviço despertador deve
+     ser …").
    - **Custom Start Command:**
      `curl -fsS --retry 5 --retry-delay 10 --retry-all-errors --max-time 120 http://<nome>.railway.internal:8080/`
      (troque `<nome>` pelo nome anotado no passo 2).

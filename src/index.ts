@@ -10,7 +10,7 @@ import { getAuthorDelegationRank } from './hive/haf';
 import { hiveEngineApi } from './hive_engine';
 import { vote, comment } from './hive/index';
 import { getUserCsiScore } from './hive/csi';
-import { parseQuietHours, isQuietTime, msUntilQuietStart } from './quiet-hours';
+import { parseQuietHours, isQuietTime, msUntilQuietStart, wakerCronSchedule } from './quiet-hours';
 import { startSleepController, SleepController } from './sleep-mode';
 import { stopStream } from './hive/stream';
 import { startMemoryLog, logVolumeUsage } from './diagnostics';
@@ -1487,6 +1487,7 @@ async function boot(): Promise<void> {
   }
 
   if (quietWindow) {
+    console.log(`Modo dormir ativo (QUIET_HOURS=${process.env.QUIET_HOURS}). O Cron Schedule do serviço despertador deve ser "${wakerCronSchedule(quietWindow)}" (UTC); se não for, o bot não acorda.`);
     sleepController = await startSleepController({
       window: quietWindow,
       port: Number(process.env.PORT) || 8080,

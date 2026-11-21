@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQuietHours, isQuietTime, msUntilQuietStart, msUntilQuietEnd } from './quiet-hours';
+import { parseQuietHours, isQuietTime, msUntilQuietStart, msUntilQuietEnd, wakerCronSchedule } from './quiet-hours';
 
 const HOUR_MS = 3600_000;
 const W = parseQuietHours('02-09')!;
@@ -33,3 +33,11 @@ test('msUntilQuietEnd from 02:00 BRT is 7h', () =>
 
 test('msUntilQuietEnd from 08:59:30 BRT is 30s', () =>
   assert.equal(msUntilQuietEnd(W, new Date('2026-11-21T11:59:30Z')), 30_000));
+
+// The waker cron (UTC) must fire at the END of the window: a waker that
+// fires inside the window only gets "dormindo" back and the bot sleeps all day.
+test('wakerCronSchedule for 02-09 fires at 09h BRT (12h UTC)', () =>
+  assert.equal(wakerCronSchedule(W), '0,15,30 12 * * *'));
+
+test('wakerCronSchedule wraps past midnight UTC', () =>
+  assert.equal(wakerCronSchedule(parseQuietHours('22-23')!), '0,15,30 2 * * *'));

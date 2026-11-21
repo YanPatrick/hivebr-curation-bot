@@ -61,3 +61,12 @@ export function msUntilQuietStart(window: QuietWindow, now = new Date()): number
 export function msUntilQuietEnd(window: QuietWindow, now = new Date()): number {
   return msUntilBrasiliaHour(window.endHour, now);
 }
+
+// Cron schedule (UTC, as Railway uses) for the waker service: three tries,
+// 15 minutes apart, starting when the window ends. It has to follow
+// QUIET_HOURS: a waker firing inside the window only gets "dormindo" back,
+// and the bot would stay asleep all day.
+export function wakerCronSchedule(window: QuietWindow): string {
+  const utcHour = (window.endHour - BRASILIA_UTC_OFFSET_HOURS) % 24;
+  return `0,15,30 ${utcHour} * * *`;
+}
